@@ -1,0 +1,224 @@
+---
+title: ''
+output: html_document
+---
+
+## Practical Machine Learning Course Project
+
+#### Introduction
+In this project, I am going to analyse the Weight Lifting Exercises Dataset from the Human Activity Recognition project [available here](http://groupware.les.inf.puc-rio.br/har).  The goal is to be able to classify weight lifting exercises that were performed by 6 subjects in 5 different ways (correctly and in four mistaken ways).  The classification will be based on data that was collected from various biometric sensors worn while the exercises were performed.  I will use a random forest model to predict the classifications.  I will also use cross validation to estimate the out of sample error rate that might be expected from this model.
+
+#### Data Processing
+
+I begin by loading the caret library and the data:
+
+```{r}
+library(caret)
+training<-read.csv("pml-training.csv",na.string = c("","NA"))
+```
+
+The data contains 160 variables, but a quick scan of data shows that most of the values are NAs.  Looking at the variable names with `names(training)` shows that there is a variable named "new_window" and that many of the variables seem to be summary statistics such as "stddev_yaw_forearm".  It would seem that what we have is data that was collected at intervals where the first interval was marked as a "new_window" and the summary statistics were recorded once for each new window.  Lets make sure that the number of new_windows and the nonNA entries for stddev_yaw_forearm are the same:
+
+
+```{r}
+sum(training$new_window=="yes")
+sum(!is.na(training$stddev_yaw_forearm))
+```
+
+Sure enough they're both 406.  Since we're concerned with the data collected while the subjects were performing the actions and not the summaries of the action, I'll subset to a smaller data frame removing all the variables that are only summaries.  Since the variables I don't want are NA except for 406 rows, I'll use that as my condition for the subset operation.
+
+
+```{r}
+training<-training[sapply(training,function(x)sum(!is.na(x))!=406)]
+```
+
+#### Locating Relevant Features
+
+This leaves us with 60 variables.  Since the goal is distinguish the class of the exercise with a random forest model, I want to find features where the variables separate into nice clusters based on the class.  Unfortunately, most of the plots of the variables look like this:
+
+```{r}
+qplot(magnet_forearm_x,yaw_forearm,colour=classe,data=training)
+```
+
+I looked at many plots and they all had the same general features of the plot above.  The classes were always mashed up together without much separation.  One thing that does stand out from looking at the plots is that there are some cases where the data is split into two distinct clusters, but the clusters were not based on the class of the exercise.  Further examination showed that the clustering was mostly due to the subject performing the action.  The following plot gives an example of such a case.
+
+```{r}
+qplot(magnet_dumbbell_y,magnet_forearm_y,colour=user_name,data=training)
+```
+
+So since I am unable to find useful features other than user_name for separating the data, I'm going to resort to two techniques for trying to find useful features.  I'm not proud of either of these techniques, and I wouldn't recommend them in general.
+
+###### Technique 1: Estimating Separation
+
+Since I'm trying to find features where the values for the different classes lie in separate clusters, I'll simply run through the variables and count up how many times an item in one class lies outside the range of the values of those in each of the other classes.  The awful code that accomplishes this is as follows:
+
+```{r}
+dista<-numeric(60);names(dista)<-names(training)
+distb<-numeric(60);names(distb)<-names(training)
+distc<-numeric(60);names(distc)<-names(training)
+distd<-numeric(60);names(distd)<-names(training)
+diste<-numeric(60);names(diste)<-names(training)
+
+for(j in 8:59){
+  
+  mins<-tapply(training[,j],training$classe,min)
+  maxes<-tapply(training[,j],training$classe,max)
+  mina<-mins[1]
+  maxa<-maxes[1]
+  minb<-mins[2]
+  maxb<-maxes[2]
+  minc<-mins[3]
+  maxc<-maxes[3]
+  mind<-mins[4]
+  maxd<-maxes[4]
+  mine<-mins[5]
+  maxe<-maxes[5]
+  
+  
+  for(i in 1:19622){
+    curval<-training[i,j]
+    
+    
+    if(training$classe[i]=="A"){
+      if(curval<minb || curval>maxb)  dista[j]<-dista[j]+1
+      if(curval<minc || curval>maxc)  dista[j]<-dista[j]+1
+      if(curval<mind || curval>maxd)  dista[j]<-dista[j]+1
+      if(curval<mine || curval>maxe)  dista[j]<-dista[j]+1
+    }
+    else if(training$classe[i]=="B"){
+      if(curval<minb || curval>maxb)  distb[j]<-distb[j]+1
+      if(curval<minc || curval>maxc)  distb[j]<-distb[j]+1
+      if(curval<mind || curval>maxd)  distb[j]<-distb[j]+1
+      if(curval<mine || curval>maxe)  distb[j]<-distb[j]+1
+    }
+    if(training$classe[i]=="C"){
+      if(curval<mina || curval>maxa)  distc[j]<-distc[j]+1
+      if(curval<minb || curval>maxb)  distc[j]<-distc[j]+1
+      if(curval<mind || curval>maxd)  distc[j]<-distc[j]+1
+      if(curval<mind || curval>maxd)  distc[j]<-distc[j]+1
+    }
+    if(training$classe[i]=="D"){
+      if(curval<mina || curval>maxa)  distd[j]<-distd[j]+1
+      if(curval<minb || curval>maxb)  distd[j]<-distd[j]+1
+      if(curval<minc || curval>maxc)  distd[j]<-distd[j]+1
+      if(curval<mind || curval>maxd)  distd[j]<-distd[j]+1
+    }
+    if(training$classe[i]=="E"){
+      if(curval<mina || curval>maxa)  diste[j]<-diste[j]+1
+      if(curval<minb || curval>maxb)  diste[j]<-diste[j]+1
+      if(curval<minc || curval>maxc)  diste[j]<-diste[j]+1
+      if(curval<mind || curval>maxd)  diste[j]<-diste[j]+1
+    }
+  }
+}
+```
+
+Now we can get the total number of times the variables are outside the range of the others.
+
+```{r}
+sum(dista)
+sum(distb)
+sum(distc)
+sum(distd)
+sum(diste)
+```
+
+This tells us that actions in class C are hardly ever outside the range of the values of the other classes.  B and D fall outside of other values almost twice as much.  However A and D are distinct quite often.  Here is a list of the top 8 features where actions in class B, C, and D are most distinct:
+
+```{r}
+head(names(rev(sort(distb))),8)
+head(names(rev(sort(distc))),8)
+head(names(rev(sort(distd))),8)
+```
+
+###### Technique 2: Using lm's coeficients
+
+For the second technique I'll simply scale the data and fit a linear model through it.  I'll first throw out the first 8 variables since they are things like timecodes and user names that are not relevant.
+
+```{r}
+training2<-training[,8:59]
+for(i in 1:52) training2[,i]<-scale(training[,i+7])
+training2$classe<-training$classe
+```
+
+Next I'll construct the model and look at the variables with the 8 highest coeficients.
+
+```{r}
+lmod<-lm(as.numeric(classe)~.,data=training2)
+head(names(rev(sort(abs(lmod$coef)))),8)
+```
+
+###### Final Selection
+
+As mentioned above user_name is an important variable, so that will be part of the model.  Since exercises in class C have so few distinct values, I'll pick the 4 features where it is most distinct: pitch_forearm, magnet_dumbbell_y, accel_dumbbell_y, and yaw_arm.  Hopefully this will help the model pick out actions in class C.  Since classes B and D are also hard to pick out but not as much as C, I'll pick the top 2 features where the are most distinguished.  For B I'll add magnet_dumbbell_y and accel_dumbbell_x (accel_dumbbell_x is actually the third feature for B, but the second,pitch_forearm, has already been included).  For D I'll add roll_belt and accel_belt_z.  Class A and E are much more prominent, so I'll assume that the be picked out well by any of other features in the model.  
+
+Since the variables with the largest coefficients in the linear model are significant in some sense, I'll also add the ones with the 5 largest values there: roll_belt, magnet_dumbbell_z, magnet_dumbbell_x, accel_arm_z, pitch_belt.  
+
+While I'm not sure that either of these methods are a good way to pick out features, I'm going to hope that it's enough to make the model work.          
+         
+#### Running the Algorithm
+
+Now that I have selected the features we're almost ready to run the model.  I'll set a train control object to use repeated cross-validation with 10 repetitions.  On each repetition there will be 10 folds.  I'll also ask it to save the predictions on each repetition so that they can be used later.
+
+```{r}
+tc <- trainControl("repeatedcv", number=10, repeats=10, savePred=T) 
+```
+
+Now we can finally run train the model:
+
+```{r}
+rffit <- train(classe ~ roll_belt +magnet_dumbbell_z +magnet_dumbbell_x +accel_arm_z +pitch_belt +pitch_forearm +magnet_dumbbell_y +accel_dumbbell_y +yaw_arm +magnet_dumbbell_y +accel_dumbbell_x +gyros_belt_z +magnet_belt_z +user_name,data=training,method="rf", trControl=tc)
+```
+
+Next I'll save the model so that I can use it for the second part of this assignment.
+
+```{r}
+save(rffit, file="model.RData")
+```
+
+#### Estimating the In Sample Performance
+
+We can evaluate the in sample performance of the model with the confusionMatrix function.
+
+```{r}
+confusionMatrix(training$classe,predict(rffit,training))
+```
+
+Thus we have perfect in sample performance.  That may not be a good thing if we're tuning the model too much to the noise in the training data set.  Hopefully the cross validation will smooth out any overtuning.
+
+
+#### Using Cross Validation to Estimate the Out of Sample Performance
+
+As I mentioned before, I asked the train function to save the predictions at each step of the cross validation process.  This data is stored in the rffit$pred list.  Let's take a look at the data in this list.
+
+```{r}
+head(rffit$pred,5)
+```
+
+So for each data point, we have a list of the actual class, the models predicted class, and the fold to which the point was assigned.  I'll add an extra column to the list to indicate an error (ie when the prediction doesn't match the observation).
+
+```{r}
+rffit$pred$err<-as.numeric(rffit$pred$pred!=rffit$pred$obs)
+```
+
+Now I'll produce an error rate estimate for each fold by simply adding up the number of errors divided by the number of objects in the fold:
+
+```{r}
+errorEstimate<-as.list(tapply(rffit$pred$err,rffit$pred$Resample,sum)/tapply(rep(1,length(rffit$pred$Resample)),rffit$pred$Resample,sum))
+```
+
+So, for example, the error rate on fold 1 for the first repetition is:
+
+```{r}
+errorEstimate$Fold01.Rep01
+```
+
+To estimate the out of sample error rate, we simply take the mean of each of the 10 folds that were held back for each of the to repititions of the cross validation.  However there's a slight problem.  The caret documentation doesn't seem to indicate which fold is held back for each repetition, so I don't know which folds to use.  
+
+But the error rate on the fold that was held back should be the highest one for each repetition.  So the folds with the 10 highest error rates should be the ones that were held back for each of the 10 repitions.  So I'll simply take the mean 10 highest error rates.  The worst that will happen is I'll overestimate the out of sample error rate.  
+
+```{r}
+mean(tail(sort(as.numeric(errorEstimate)),10))
+```
+
+This isn't great.  But it's terrible either.  Without a better way of selecting features, I may not be able to do better.
